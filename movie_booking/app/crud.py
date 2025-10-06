@@ -10,12 +10,17 @@ from .utils import apply_promo, code_from_row_col, seat_type_for
 import uuid
 from datetime import datetime
 
-# ---------- MOVIES ----------
+
+# =========================
+#        MOVIES
+# =========================
 def create_movie(data: MovieCreate) -> Movie:
+    """Buat movie baru dan simpan ke storage (in-memory)."""
     m = Movie(id=storage.next_movie_id(), **data.model_dump())
     return storage.save_movie(m)
 
 def update_movie(movie_id: int, data: MovieUpdate) -> Movie:
+    """Update field yang diberikan (partial update) untuk movie tertentu."""
     m = storage.get_movie(movie_id)
     if not m:
         raise HTTPException(404, "Movie not found")
@@ -23,24 +28,38 @@ def update_movie(movie_id: int, data: MovieUpdate) -> Movie:
     return storage.save_movie(updated)
 
 def delete_movie(movie_id: int) -> None:
+    """Hapus movie. Sekaligus cascade hapus showtime & seat map miliknya."""
     if not storage.delete_movie(movie_id):
         raise HTTPException(404, "Movie not found")
 
-# ---------- SHOWTIMES ----------
+
+# =========================
+#       SHOWTIMES
+# =========================
 def create_showtime(movie_id: int, data: ShowtimeCreate) -> Showtime:
+    """Buat showtime baru untuk movie tertentu + inisialisasi seat map & metadata layout."""
     if not storage.get_movie(movie_id):
         raise HTTPException(404, "Movie not found")
     st = Showtime(id=storage.next_showtime_id(), movie_id=movie_id, **data.model_dump())
     return storage.save_showtime(st)
 
-# ---------- SEATS / LAYOUT ----------
+
+# =========================
+#    SEATS / LAYOUT
+# =========================
 def get_seats_status(showtime_id: int) -> Dict[str, SeatStatus]:
+    """Kembalikan peta kursi: { 'A1': 'available', ... }."""
     seat_map = storage.seats_map(showtime_id)
     if seat_map is None:
         raise HTTPException(404, "Showtime not found")
     return seat_map
 
 def get_seat_layout(showtime_id: int) -> SeatLayout:
+    """
+    Kembalikan layout 2D untuk visualisasi:
+    - screen_side, aisles_cols
+    - grid[row][col] -> SeatCell(code, status, seat_type)
+    """
     st = storage.get_showtime(showtime_id)
     seat_map = storage.seats_map(showtime_id)
     meta = storage.showtime_meta(showtime_id)
@@ -50,6 +69,7 @@ def get_seat_layout(showtime_id: int) -> SeatLayout:
     vip = meta["vip"]
     disabled = meta["disabled"]
     grid: List[List[SeatCell]] = []
+
     for r in range(1, st.rows + 1):
         row_cells: List[SeatCell] = []
         for c in range(1, st.cols + 1):
@@ -70,18 +90,25 @@ def get_seat_layout(showtime_id: int) -> SeatLayout:
         legend={
             "available": "Kursi dapat dipesan",
             "reserved": "Sedang di-cart pengguna lain",
-            "booked": "Sudah dibayar",
-            "blocked": "Dinonaktifkan",
-            "vip": "Kursi VIP",
+            "booked":   "Sudah dibayar",
+            "blocked":  "Dinonaktifkan",
+            "vip":      "Kursi VIP",
             "standard": "Kursi standar",
             "screen_side": "Posisi layar relatif grid",
-            "aisles_cols": "Nomor kolom lorong/aisle (1-based)"
+            "aisles_cols":  "Nomor kolom lorong/aisle (1-based)"
         },
         grid=grid
     )
 
-# ---------- CART ----------
+
+# =========================
+#          CART
+# =========================
 def add_to_cart(user_id: str, showtime_id: int, seats: List[str]) -> tuple[str, float]:
+    """
+    Reserve kursi (status -> reserved) dan masukkan ke cart user.
+    Return: (cart_item_id, subtotal)
+    """
     seat_map = storage.seats_map(showtime_id)
     st = storage.get_showtime(showtime_id)
     meta = storage.showtime_meta(showtime_id)
@@ -107,17 +134,25 @@ def add_to_cart(user_id: str, showtime_id: int, seats: List[str]) -> tuple[str, 
     return cart_item_id, subtotal
 
 def remove_from_cart(user_id: str, cart_item_id: str | None, seats: List[str] | None) -> None:
+    """
+    Hapus kursi tertentu dari item (partial) atau hapus item penuh berdasarkan cart_item_id.
+    Mengembalikan kursi yang dilepas ke status 'available'.
+    """
     items = storage.get_cart(user_id) or []
     new_items: List[Tuple[str, int, List[str]]] = []
     changed = False
 
     for cid, stid, seat_list in items:
         seat_map = storage.seats_map(stid)
+
+        # hapus seluruh item
         if cart_item_id and cid == cart_item_id:
             for s in seat_list:
                 seat_map[s] = SeatStatus.available
             changed = True
             continue
+
+        # hapus sebagian kursi dari item mana pun
         if seats:
             keep = [s for s in seat_list if s not in seats]
             if len(keep) != len(seat_list):
@@ -128,6 +163,7 @@ def remove_from_cart(user_id: str, cart_item_id: str | None, seats: List[str] | 
                 if keep:
                     new_items.append((cid, stid, keep))
                 continue
+
         new_items.append((cid, stid, seat_list))
 
     if not changed and len(new_items) == len(items):
@@ -136,6 +172,7 @@ def remove_from_cart(user_id: str, cart_item_id: str | None, seats: List[str] | 
     storage.set_cart(user_id, new_items)
 
 def get_cart_summary(user_id: str) -> tuple[list, float]:
+    """Hitung ulang subtotal per item & total cart untuk user."""
     items = storage.get_cart(user_id) or []
     enriched = []
     total = 0.0
@@ -146,7 +183,15 @@ def get_cart_summary(user_id: str) -> tuple[list, float]:
         enriched.append({"id": cid, "showtime_id": stid, "seats": seat_list, "subtotal": subtotal})
     return enriched, total
 
+
+# =========================
+#         CHECKOUT
+# =========================
 def checkout(user_id: str, promo_code: str | None) -> dict:
+    """
+    Validasi kursi masih reserved, hitung total & promo, finalisasi -> booked,
+    kosongkan cart, generate booking_code, SIMPAN booking agar bisa dicek lagi.
+    """
     items = storage.get_cart(user_id) or []
     if not items:
         raise HTTPException(400, "Cart is empty")
@@ -174,13 +219,33 @@ def checkout(user_id: str, promo_code: str | None) -> dict:
 
     storage.set_cart(user_id, [])
     code = f"BKG-{uuid.uuid4().hex[:10].upper()}"
+    timestamp = datetime.now().isoformat(timespec="seconds")
 
-    return {
+    payload = {
         "booking_code": code,
         "user_id": user_id,
         "total_before_discount": total,
         "discount_amount": discount,
         "total_paid": total_paid,
         "items": result_items,
-        "timestamp": datetime.now().isoformat(timespec="seconds")
+        "timestamp": timestamp
     }
+
+    # SIMPAN booking agar bisa dicek ulang
+    storage.save_booking(payload)
+    return payload
+
+
+# =========================
+#       TICKETS (NEW)
+# =========================
+def get_booking(booking_code: str) -> dict:
+    """Ambil tiket berdasarkan booking_code (untuk /tickets/{booking_code})."""
+    b = storage.get_booking(booking_code)
+    if not b:
+        raise HTTPException(404, "Ticket not found")
+    return b
+
+def list_user_bookings(user_id: str) -> list[dict]:
+    """List semua tiket milik user (untuk /users/{user_id}/tickets)."""
+    return storage.list_bookings_by_user(user_id)

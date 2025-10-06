@@ -75,3 +75,15 @@ def get_cart(user_id: str) -> List[tuple[str, int, List[str]]]:
 
 def set_cart(user_id: str, items: List[tuple[str, int, List[str]]]) -> None:
     _carts[user_id] = items
+
+# --- BOOKINGS (NEW) ---
+_bookings: Dict[str, dict] = {}
+
+def save_booking(booking: dict) -> None:
+    _bookings[booking["booking_code"]] = booking
+
+def get_booking(booking_code: str) -> dict | None:
+    return _bookings.get(booking_code)
+
+def list_bookings_by_user(user_id: str) -> List[dict]:
+    return [b for b in _bookings.values() if b.get("user_id") == user_id]

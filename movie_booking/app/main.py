@@ -1,21 +1,33 @@
+# app/main.py
 from fastapi import FastAPI, HTTPException
 from typing import List, Dict
+
 from .schemas import (
+    # Movie / Showtime
     MovieCreate, MovieUpdate, Movie,
     ShowtimeCreate, Showtime, SeatStatus,
+    # Cart & Checkout
     AddToCartRequest, RemoveFromCartRequest, Cart, CartItem,
-    CheckoutRequest, CheckoutResponse, SeatLayout
+    CheckoutRequest, CheckoutResponse,
+    # Visual Layout
+    SeatLayout,
 )
-from . import crud
-from . import storage
+from . import crud, storage
+
 
 app = FastAPI(
     title="Movie Booking System (Project 5)",
-    description="Tanpa DB/JWT. In-memory movies, showtimes, seats, cart, checkout + visual layout.",
+    description=(
+        "Backend tanpa DB/JWT (in-memory). "
+        "Fitur: kelola film & showtime, layout kursi visual, cart, checkout, dan cek tiket."
+    ),
     version="1.0.0",
 )
 
-# -------- Admin --------
+# =========================
+#         ADMIN
+# =========================
+
 @app.post("/admin/movies", response_model=Movie, tags=["Admin"])
 def create_movie(movie: MovieCreate):
     return crud.create_movie(movie)
@@ -48,7 +60,11 @@ def create_showtime_admin(movie_id: int, data: ShowtimeCreate):
 def list_showtimes_admin():
     return storage.list_showtimes()
 
-# -------- User --------
+
+# =========================
+#          USER
+# =========================
+
 @app.get("/movies", response_model=List[Movie], tags=["User"])
 def list_movies_user():
     return storage.list_movies()
@@ -61,11 +77,12 @@ def list_showtimes_for_movie(movie_id: int):
 def get_seats(showtime_id: int):
     return crud.get_seats_status(showtime_id)
 
-# NEW: layout visual (grid 2D + metadata untuk digambar di UI)
+# Layout kursi 2D + metadata (screen_side, aisles_cols) untuk front-end
 @app.get("/showtimes/{showtime_id}/layout", response_model=SeatLayout, tags=["User"])
 def get_layout(showtime_id: int):
     return crud.get_seat_layout(showtime_id)
 
+# -------- Cart & Checkout --------
 @app.post("/cart/add", response_model=CartItem, tags=["User"])
 def add_to_cart(req: AddToCartRequest):
     cid, subtotal = crud.add_to_cart(req.user_id, req.showtime_id, req.seats)
@@ -84,3 +101,18 @@ def remove_from_cart(req: RemoveFromCartRequest):
 @app.post("/checkout", response_model=CheckoutResponse, tags=["User"])
 def checkout(req: CheckoutRequest):
     return crud.checkout(req.user_id, req.promo_code)
+
+
+# =========================
+#        TICKETS (NEW)
+# =========================
+
+# Lihat detail tiket berdasarkan booking_code
+@app.get("/tickets/{booking_code}", response_model=CheckoutResponse, tags=["User"])
+def get_ticket(booking_code: str):
+    return crud.get_booking(booking_code)
+
+# List semua tiket milik user
+@app.get("/users/{user_id}/tickets", response_model=List[CheckoutResponse], tags=["User"])
+def list_tickets(user_id: str):
+    return crud.list_user_bookings(user_id)
